@@ -1,0 +1,190 @@
+memos iOS 15 兼容分支 —— 维护说明
+========================================================================
+
+【这个分支是什么】
+
+  分支：    ios15-compat
+  基线：    v0.30.0（官方 stable）
+  origin:   https://github.com/amakerlife/memos   （你的 fork）
+  upstream: https://github.com/usememos/memos     （官方）
+
+修的问题：iOS 15 / Safari 15 打开站点首页白屏，控制台报
+  React Router caught the following error during render
+  SyntaxError: Invalid regular expression: invalid group specifier name
+  parseModule ...
+
+根因：remark-gfm 的传递依赖 mdast-util-gfm-autolink-literal 里，GFM 邮箱
+自动链接用了一个 lookbehind 正则 (?<=^|\s|\p{P}|\p{S})。Safari 从 16.4 才
+支持 lookbehind。因为它是正则「字面量」而不是 new RegExp()，JS 引擎在
+「模块解析阶段」就抛 SyntaxError（对应堆栈里的 parseModule），整个 chunk
+加载失败，React Router 在渲染时捕获到。该 chunk 被 MemoView / MemoContent
+静态引用，所以只要页面要渲染任意一条 memo 就会触发 —— 表现为首页白屏。
+
+
+【改动清单】共 6 个文件
+
+  web/patches/mdast-util-gfm-autolink-literal@2.0.1.patch
+      删掉那个 lookbehind。
+
+  web/pnpm-workspace.yaml
+      注册上面的 patch（pnpm 的 patchedDependencies）。
+
+  web/vite.config.mts
+      build.target 降到 safari15。默认是 baseline-widely-available（≈Safari 16），
+      会放行 class static block（Safari 16.4+ 特性），mermaid 的 33 个 chunk
+      全是这玩意，同样在解析阶段就炸。降 target 后它们会被降级编译。
+      注意：降 target 解决不了 lookbehind —— esbuild/oxc 不转译正则字面量语法。
+
+  web/src/utils/browser-support.ts
+      lookbehind 运行时探针。写法刻意防压缩器优化（把 pattern 放变量里、
+      消费 test() 的返回值）；如果写成 new RegExp("(?<=x)") 丢弃返回值，
+      压缩器会判定无副作用直接删掉整个检测 —— marked 就是这么坏掉的。
+
+  web/src/components/MemoContent/CodeBlock.tsx
+      iOS 15 上把 mermaid 代码块降级成普通代码块，完全不加载 mermaid chunk。
+      顺带规避了 marked 被压缩器破坏的特性检测、chevrotain 的 Object.groupBy
+      （Safari 17+）和 cytoscape —— 它们全都只在 mermaid 依赖链上。
+
+  .github/workflows/build-ios15-image.yml
+      push 到 ios15-compat 分支就自动构建 amd64 镜像推到 GHCR。
+
+
+为什么删掉 lookbehind 不会改变行为：
+上游本来就有双保险。回调 findEmail() 里的 previous() 会重新校验前一个字符，
+它用的 unicodeWhitespace / unicodePunctuation 正是 /\s/ 和 /\p{P}|\p{S}/u，
+和被删掉的 lookbehind 字面对应；而 mdast-util-find-and-replace 在回调返回
+false 时会把 lastIndex 回退到 index+1 继续搜，不会吞掉后面的匹配。
+（当初用 38 个边界用例做过等价性比对：CJK、emoji、零宽空格、符号/斜杠前缀、
+非 ASCII 字母前缀等，新旧正则输出完全一致。）
+
+
+========================================================================
+【日常：官方发新版本后怎么同步】
+========================================================================
+
+1) 拉官方更新，看最新 tag
+
+     git fetch upstream --tags
+     git tag --sort=-v:refname | head -3
+
+2) 把补丁挪到新基线（假设新版本是 v0.31.0）
+
+     git switch ios15-compat
+     git rebase --onto v0.31.0 v0.30.0
+
+   ！注意第二个参数 v0.30.0 是「当前基线」。这次做完之后，基线就变成
+     v0.31.0 了，下次同步时要把它换掉。记不住就查：
+
+     git merge-base ios15-compat upstream/main
+
+3) 重新装依赖，验证补丁还适不适用
+
+     cd web
+     npx pnpm@11.0.1 install --config.https-proxy=http://127.0.0.1:10808 --config.proxy=http://127.0.0.1:10808
+
+   代理参数是必须的：pnpm 用 Node 的 fetch(undici)，它不读 HTTP_PROXY
+   环境变量（所以 curl 能下、pnpm 报 fetch failed）。换了代理端口就改这里。
+
+4a) 装成功 —— 补丁仍然有效，提交推送
+
+     cd ..
+     git add -A
+     git commit --amend --no-edit
+     git push -f origin ios15-compat
+
+    推上去后 GitHub Actions 自动构建新镜像。
+
+4b) 报 patch 打不上（ERR_PNPM_PATCH_FAILED / patch not applied）
+    —— 说明 mdast-util-gfm-autolink-literal 版本变了。三件事：
+
+    (1) 查新版本号：
+          grep "mdast-util-gfm-autolink-literal@" web/pnpm-lock.yaml | head -1
+
+    (2) 把 web/patches/ 下的补丁文件改名成新版本号，
+        并同步改 web/pnpm-workspace.yaml 里的两处版本号。
+
+    (3) 确认新版本里那行正则没变。下载看一眼：
+          curl -sL https://registry.npmjs.org/mdast-util-gfm-autolink-literal/-/mdast-util-gfm-autolink-literal-<新版本>.tgz -o t.tgz
+          tar xzf t.tgz
+          grep -n "findEmail\]" package/lib/index.js
+
+        如果还是    [/(?<=^|\s|\p{P}|\p{S})([-.\w+]+)@([-\w]+(?:\.[-\w]+)+)/gu, findEmail]
+        就改成      [/([-.\w+]+)@([-\w]+(?:\.[-\w]+)+)/gu, findEmail]
+        重新生成 patch 即可（改完 patch 文件里的行号上下文也要对得上，
+        最省事的办法是照着现有 patch 的格式手改，或者用 pnpm patch 重做）。
+
+    这个报错是好事 —— 它保证依赖升级时补丁不会静默失效。
+
+5) rebase 冲突了怎么办
+
+    补丁只碰 6 个文件，冲突面很小。最可能冲突的是 web/pnpm-lock.yaml，
+    直接拿新基线的版本，然后重跑第 3 步让它重新生成：
+
+      git checkout v0.31.0 -- web/pnpm-lock.yaml
+      cd web && npx pnpm@11.0.1 install --config.https-proxy=http://127.0.0.1:10808 --config.proxy=http://127.0.0.1:10808
+      cd .. && git add web/pnpm-lock.yaml
+      git rebase --continue
+
+    实在乱了就 git rebase --abort，然后在新 tag 上重开一个分支手工重做
+    （改动就是上面「改动清单」那 6 个文件，都很小）。
+
+6) 上游要是自己修了这个问题
+
+    那就可以扔掉整个 fork，服务器 image 换回 neosmemo/memos:stable 完事。
+    判断方法：新版本装完依赖后，跑一次
+      cd web && npx pnpm@11.0.1 release
+      grep -rlE '[^`"'"'"']\(\?<[=!]' ../server/router/frontend/dist/assets --include='*.js'
+    没有输出就说明产物里已经没有 lookbehind 正则字面量了。
+
+
+========================================================================
+【部署】
+========================================================================
+
+镜像地址：
+
+  ghcr.io/amakerlife/memos:ios15              滚动标签，总是最新
+  ghcr.io/amakerlife/memos:0.30.0-ios15.N     带构建号，用来回滚
+
+服务器上操作（数据在 volume 里，换镜像不影响数据）：
+
+  # 先备份数据库
+  cp ~/.memos/memos_prod.db ~/.memos/memos_prod.db.bak
+
+  # compose.yaml 里把 image 改成 ghcr.io/amakerlife/memos:ios15
+  docker compose pull && docker compose up -d
+
+回滚到官方：image 改回 neosmemo/memos:stable，再 pull && up -d。
+
+首次拉取如果报 denied / unauthorized：GHCR 的包默认是 private。
+去 GitHub 头像 → Packages → memos → Package settings → Change visibility
+改成 public 最省事（镜像里只有开源代码，没有任何密钥）。
+不想公开就在服务器上登录：
+  echo "<只勾 read:packages 的 PAT>" | docker login ghcr.io -u amakerlife --password-stdin
+
+
+========================================================================
+【怎么确认修好了】
+========================================================================
+
+Actions 里有一道守护步骤，会扫描构建产物，一旦发现 lookbehind 正则字面量
+就直接让构建失败。所以只要 Actions 是绿的，这个 bug 不可能溜进镜像。
+（它能区分正则字面量和字符串：browser-support.ts 里那个探针是字符串形式、
+ 包在 try/catch 里，不会误报。）
+
+真机验证：用 iOS 15 的 Safari 打开站点，首页能正常显示 memo 列表就是好了。
+mermaid 图在 iOS 15 上会显示成普通代码块 —— 这是有意的降级，不是 bug。
+
+
+========================================================================
+【建议：推给上游】
+========================================================================
+
+这个 bug 影响所有 iOS 15 用户，不只是你。给 usememos/memos 提个 issue，
+附上 parseModule 的堆栈和根因（mdast-util-gfm-autolink-literal 的 lookbehind
+正则字面量 + 默认 build.target 放行了 class static block）。
+memos 自己只需要设 build.target，lookbehind 是 remark-gfm 带进来的。
+
+另外 marked 那个被压缩器优化掉的特性检测，值得给 rolldown/oxc 提一个 bug：
+minifier 把 new RegExp(...) 当作无副作用代码删除是不对的 —— RegExp 构造
+在不支持的语法上会抛异常，这正是特性检测赖以工作的前提。
