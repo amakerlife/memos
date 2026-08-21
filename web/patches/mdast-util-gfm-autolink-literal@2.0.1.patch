@@ -1,0 +1,21 @@
+diff --git a/lib/index.js b/lib/index.js
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -132,7 +132,16 @@ function transformGfmAutolinkLiterals(tree) {
+     tree,
+     [
+       [/(https?:\/\/|www(?=\.))([-.\w]+)([^ \t\r\n]*)/gi, findUrl],
+-      [/(?<=^|\s|\p{P}|\p{S})([-.\w+]+)@([-\w]+(?:\.[-\w]+)+)/gu, findEmail]
++      // Upstream prefixes this with a `(?<=^|\s|\p{P}|\p{S})` lookbehind, which
++      // Safari only supports from 16.4. Being a regex *literal*, it throws at
++      // parse time and takes down the whole chunk on iOS 15, so it is dropped
++      // here. This preserves behaviour: `findEmail` re-checks the preceding
++      // character through `previous()`, whose `unicodeWhitespace` and
++      // `unicodePunctuation` are exactly `/\s/` and `/\p{P}|\p{S}/u`. The extra
++      // candidates this lets through are rejected by that callback, and
++      // mdast-util-find-and-replace rewinds `lastIndex` to `index + 1` on a
++      // `false` result, so no later match is swallowed.
++      [/([-.\w+]+)@([-\w]+(?:\.[-\w]+)+)/gu, findEmail]
+     ],
+     {ignore: ['link', 'linkReference']}
+   )

@@ -43,6 +43,13 @@ export default defineConfig({
     },
   },
   build: {
+    // iOS 15 / Safari 15 is the supported floor. The default
+    // ("baseline-widely-available") sits at Safari 16, which lets class static
+    // blocks through — those are a Safari 16.4 feature and fail at parse time,
+    // taking down the whole chunk (mermaid ships plenty of them).
+    // Note: this does NOT downlevel regex syntax; lookbehind in dependencies
+    // has to be patched out separately (see patches/).
+    target: ["es2020", "chrome87", "edge88", "firefox78", "safari15"],
     rolldownOptions: {
       output: {
         codeSplitting: {

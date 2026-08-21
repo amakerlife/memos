@@ -4,6 +4,7 @@ import { CheckIcon, CopyIcon } from "lucide-react";
 import { isValidElement, type ReactElement, type ReactNode, useEffect, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
+import { supportsLookbehind } from "@/utils/browser-support";
 import { getThemeWithFallback, resolveTheme } from "@/utils/theme";
 import { ensureHighlightTheme, highlightCode, isPlainTextLanguage } from "./highlight";
 import { MermaidBlock } from "./MermaidBlock";
@@ -21,8 +22,11 @@ export const CodeBlock = ({ children, className, node: _node, ...props }: CodeBl
   const codeContent = extractCodeContent(children);
   const language = extractLanguage(codeClassName);
 
-  // If it's a mermaid block, render with MermaidBlock component
-  if (language === "mermaid") {
+  // If it's a mermaid block, render with MermaidBlock component.
+  // mermaid's chunks are full of class static blocks (Safari 16.4+), which are
+  // a parse-time error on older Safari — degrade to a plain code block there
+  // rather than loading a chunk the engine cannot even parse.
+  if (language === "mermaid" && supportsLookbehind) {
     return (
       <pre className="relative">
         <MermaidBlock className={cn(className)} {...props}>
