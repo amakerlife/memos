@@ -4,6 +4,8 @@ import { resolve } from "path";
 import { defineConfig } from "vite";
 import tailwindcss from "@tailwindcss/vite";
 
+const browserTargets = ["es2020", "chrome87", "edge88", "firefox78", "safari15"];
+
 let devProxyServer = "http://localhost:8081";
 if (process.env.DEV_PROXY_SERVER && process.env.DEV_PROXY_SERVER.length > 0) {
   console.log("Use devProxyServer from environment: ", process.env.DEV_PROXY_SERVER);
@@ -42,6 +44,13 @@ export default defineConfig({
       "@/": `${resolve(__dirname, "src")}/`,
     },
   },
+  worker: {
+    // Vite 8's worker pipeline does not pass build.target to Rolldown.
+    // MapLibre's worker otherwise retains class static blocks that iOS 15 cannot parse.
+    rolldownOptions: {
+      transform: { target: browserTargets },
+    },
+  },
   build: {
     // iOS 15 / Safari 15 is the supported floor. The default
     // ("baseline-widely-available") sits at Safari 16, which lets class static
@@ -49,7 +58,7 @@ export default defineConfig({
     // taking down the whole chunk (mermaid ships plenty of them).
     // Note: this does NOT downlevel regex syntax; lookbehind in dependencies
     // has to be patched out separately (see patches/).
-    target: ["es2020", "chrome87", "edge88", "firefox78", "safari15"],
+    target: browserTargets,
     rolldownOptions: {
       output: {
         codeSplitting: {

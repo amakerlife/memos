@@ -22,6 +22,8 @@ CI 使用 Node 24、pnpm 11.0.1、Go 1.27.0；本地修改代码不要求安装 
 
 3. web/vite.config.mts
    保留 safari15 编译目标，降级 class static block 等可转译语法。
+   Vite 8 的 Worker 构建路径不传递 build.target，必须同时设置
+   worker.rolldownOptions.transform.target，否则地图 Worker 仍含不兼容语法。
    build.target 不会自动修复正则 lookbehind 或补齐浏览器运行时 API。
 
 4. web/src/utils/browser-support.ts 与 MemoContent/CodeBlock.tsx
