@@ -7,7 +7,8 @@ origin：https://github.com/amakerlife/memos
 upstream：https://github.com/usememos/memos
 
 本地负责修改和审查代码，测试及镜像构建交给 GitHub Actions。
-CI 使用 Node 24、pnpm 11.0.1、Go 1.27.0；本地修改代码不要求安装 Node 24。
+CI 使用 Node 24、pnpm 11.0.1，镜像沿用上游 Go 1.27.0 构建环境。
+本地修改代码不要求安装 Node 24，镜像工作流不运行数据库验证。
 
 【保留的兼容改动】
 
@@ -73,7 +74,6 @@ CI 使用 Node 24、pnpm 11.0.1、Go 1.27.0；本地修改代码不要求安装 
      git push -u origin upgrade/ios15-v0.32.0
 
    .github/workflows/build-ios15-image.yml 对 upgrade/ios15-* 分支执行：
-   - SQLite、MySQL、PostgreSQL 的 store 测试和迁移测试；
    - pnpm install --frozen-lockfile（补丁或锁文件不一致会失败）；
    - pnpm lint、pnpm test；
    - pnpm release、pnpm check:ios15；
