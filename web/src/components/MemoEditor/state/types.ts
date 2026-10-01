@@ -4,9 +4,11 @@ import { Visibility } from "@/types/proto/api/v1/memo_service_pb";
 import type { LocalFile } from "../types/attachment";
 
 export type LoadingKey = "saving" | "uploading" | "loading";
+export type ContentSource = "editor" | "external";
 
 export interface EditorState {
   content: string;
+  contentSource: ContentSource;
   metadata: {
     visibility: Visibility;
     attachments: Attachment[];
@@ -15,11 +17,16 @@ export interface EditorState {
   };
   ui: {
     isFocusMode: boolean;
+    pendingInlineImageInsertions: number;
     isLoading: {
       saving: boolean;
       uploading: boolean;
       loading: boolean;
     };
+    /** Save landed and the editor is about to close; the toolbar shows a brief
+     *  confirmation instead of the commit verb. Only hosts that unmount after
+     *  saving set it; the in-place composer resets immediately. */
+    justSaved: boolean;
   };
   timestamps: {
     createTime?: Date;
@@ -33,20 +40,23 @@ export interface EditorState {
 
 export type EditorAction =
   | { type: "INIT_MEMO"; payload: { content: string; metadata: EditorState["metadata"]; timestamps: EditorState["timestamps"] } }
-  | { type: "UPDATE_CONTENT"; payload: string }
+  | { type: "UPDATE_CONTENT"; payload: { content: string; source: ContentSource } }
   | { type: "SET_METADATA"; payload: Partial<EditorState["metadata"]> }
   | { type: "ADD_LOCAL_FILE"; payload: LocalFile }
   | { type: "REMOVE_LOCAL_FILE"; payload: string }
   | { type: "SET_LOCAL_FILES"; payload: LocalFile[] }
   | { type: "TOGGLE_FOCUS_MODE" }
   | { type: "SET_LOADING"; payload: { key: LoadingKey; value: boolean } }
+  | { type: "SET_PENDING_INLINE_IMAGE_INSERTIONS"; payload: number }
   | { type: "SET_TIMESTAMPS"; payload: Partial<EditorState["timestamps"]> }
   | { type: "SET_RECORDER_BUSY"; payload: boolean }
+  | { type: "SET_JUST_SAVED"; payload: boolean }
   | { type: "RESET" };
 
 // Module-private template for createInitialState.
 const defaultState: EditorState = {
   content: "",
+  contentSource: "external",
   metadata: {
     visibility: Visibility.PRIVATE,
     attachments: [],
@@ -55,11 +65,13 @@ const defaultState: EditorState = {
   },
   ui: {
     isFocusMode: false,
+    pendingInlineImageInsertions: 0,
     isLoading: {
       saving: false,
       uploading: false,
       loading: false,
     },
+    justSaved: false,
   },
   timestamps: {
     createTime: undefined,
@@ -70,9 +82,9 @@ const defaultState: EditorState = {
 };
 
 /** Fresh initial state for a mounting editor. */
-export function createInitialState(): EditorState {
+export function createInitialState(initialFocusMode = false): EditorState {
   return {
     ...defaultState,
-    ui: { ...defaultState.ui },
+    ui: { ...defaultState.ui, isFocusMode: initialFocusMode },
   };
 }

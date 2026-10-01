@@ -1,190 +1,122 @@
-memos iOS 15 兼容分支 —— 维护说明
+memos iOS 15 兼容分支维护说明
 ========================================================================
 
-【这个分支是什么】
+分支：ios15-compat
+基线：v0.31.0（官方 stable，2026-09-20）
+origin：https://github.com/amakerlife/memos
+upstream：https://github.com/usememos/memos
 
-  分支：    ios15-compat
-  基线：    v0.30.0（官方 stable）
-  origin:   https://github.com/amakerlife/memos   （你的 fork）
-  upstream: https://github.com/usememos/memos     （官方）
+本地负责修改和审查代码，测试及镜像构建交给 GitHub Actions。
+CI 使用 Node 24、pnpm 11.0.1、Go 1.27.0；本地修改代码不要求安装 Node 24。
 
-修的问题：iOS 15 / Safari 15 打开站点首页白屏，控制台报
-  React Router caught the following error during render
-  SyntaxError: Invalid regular expression: invalid group specifier name
-  parseModule ...
+【保留的兼容改动】
 
-根因：remark-gfm 的传递依赖 mdast-util-gfm-autolink-literal 里，GFM 邮箱
-自动链接用了一个 lookbehind 正则 (?<=^|\s|\p{P}|\p{S})。Safari 从 16.4 才
-支持 lookbehind。因为它是正则「字面量」而不是 new RegExp()，JS 引擎在
-「模块解析阶段」就抛 SyntaxError（对应堆栈里的 parseModule），整个 chunk
-加载失败，React Router 在渲染时捕获到。该 chunk 被 MemoView / MemoContent
-静态引用，所以只要页面要渲染任意一条 memo 就会触发 —— 表现为首页白屏。
+1. web/patches/mdast-util-gfm-autolink-literal@2.0.1.patch
+   移除邮箱自动链接正则中的 lookbehind。Safari 16.4 之前不支持该语法，
+   正则字面量会在模块解析时抛错，导致 memo 页面白屏。
+   findEmail 的 previous() 回调仍会检查前一个字符，保持原来的边界规则。
 
+2. web/pnpm-workspace.yaml 与 web/pnpm-lock.yaml
+   注册补丁及其解析结果。0.31 自带的 @bufbuild/protobuf 补丁也必须保留，
+   不能拿旧版配置整体覆盖新版。两个补丁解决不同的问题。
 
-【改动清单】共 6 个文件
+3. web/vite.config.mts
+   保留 safari15 编译目标，降级 class static block 等可转译语法。
+   build.target 不会自动修复正则 lookbehind 或补齐浏览器运行时 API。
 
-  web/patches/mdast-util-gfm-autolink-literal@2.0.1.patch
-      删掉那个 lookbehind。
+4. web/src/utils/browser-support.ts 与 MemoContent/CodeBlock.tsx
+   通过字符串形式的 RegExp 探针检查 lookbehind；不支持时将 Mermaid
+   显示为普通代码块，不进入 Mermaid 渲染器。保留探针的 test() 调用，
+   防止压缩器删除检测。
 
-  web/pnpm-workspace.yaml
-      注册上面的 patch（pnpm 的 patchedDependencies）。
+5. web/src/components/MemoEditor/Editor/tagAutocomplete.ts
+   使用 reverse().find() 代替 findLast()，兼容 iOS 15.0–15.3。
 
-  web/vite.config.mts
-      build.target 降到 safari15。默认是 baseline-widely-available（≈Safari 16），
-      会放行 class static block（Safari 16.4+ 特性），mermaid 的 33 个 chunk
-      全是这玩意，同样在解析阶段就炸。降 target 后它们会被降级编译。
-      注意：降 target 解决不了 lookbehind —— esbuild/oxc 不转译正则字面量语法。
+6. web/scripts/check-ios15.ts
+   使用项目已有的 Babel 解析器检查所有构建出的 JS 文件，包括懒加载
+   chunk，拒绝 lookbehind 正则字面量、d/v 正则标志和 class static block。
+   字符串、注释及转义后的普通正则文本不作为 lookbehind 报错。
+   目录不存在、没有 JS 文件、文件读不出或解析失败都会使检查失败。
+   检查入口：cd web 后运行 pnpm check:ios15；默认目录为
+   server/frontend/dist/assets（0.31 已从 server/router/frontend/dist 迁移）。
 
-  web/src/utils/browser-support.ts
-      lookbehind 运行时探针。写法刻意防压缩器优化（把 pattern 放变量里、
-      消费 test() 的返回值）；如果写成 new RegExp("(?<=x)") 丢弃返回值，
-      压缩器会判定无副作用直接删掉整个检测 —— marked 就是这么坏掉的。
+【上游发布新版本后的同步流程】
 
-  web/src/components/MemoContent/CodeBlock.tsx
-      iOS 15 上把 mermaid 代码块降级成普通代码块，完全不加载 mermaid chunk。
-      顺带规避了 marked 被压缩器破坏的特性检测、chevrotain 的 Object.groupBy
-      （Safari 17+）和 cytoscape —— 它们全都只在 mermaid 依赖链上。
-
-  .github/workflows/build-ios15-image.yml
-      push 到 ios15-compat 分支就自动构建 amd64 镜像推到 GHCR。
-
-
-为什么删掉 lookbehind 不会改变行为：
-上游本来就有双保险。回调 findEmail() 里的 previous() 会重新校验前一个字符，
-它用的 unicodeWhitespace / unicodePunctuation 正是 /\s/ 和 /\p{P}|\p{S}/u，
-和被删掉的 lookbehind 字面对应；而 mdast-util-find-and-replace 在回调返回
-false 时会把 lastIndex 回退到 index+1 继续搜，不会吞掉后面的匹配。
-（当初用 38 个边界用例做过等价性比对：CJK、emoji、零宽空格、符号/斜杠前缀、
-非 ASCII 字母前缀等，新旧正则输出完全一致。）
-
-
-========================================================================
-【日常：官方发新版本后怎么同步】
-========================================================================
-
-1) 拉官方更新，看最新 tag
+1. 获取正式版本，阅读 CHANGELOG 的 Upgrade notes。
 
      git fetch upstream --tags
-     git tag --sort=-v:refname | head -3
 
-2) 把补丁挪到新基线（假设新版本是 v0.31.0）
+   优先选择明确的 stable tag，并检查数据库迁移、API 和依赖变化。
 
-     git switch ios15-compat
-     git rebase --onto v0.31.0 v0.30.0
+2. 在干净工作目录从 ios15-compat 创建升级分支，再合并新 tag。
+   分支名称使用 upgrade/ios15-*，可在独立 worktree 中操作以保全本地修改。
+   例如下一次基线为 v0.32.0 时：
 
-   ！注意第二个参数 v0.30.0 是「当前基线」。这次做完之后，基线就变成
-     v0.31.0 了，下次同步时要把它换掉。记不住就查：
+     git switch -c upgrade/ios15-v0.32.0 ios15-compat
+     git merge --no-commit --no-ff v0.32.0
 
-     git merge-base ios15-compat upstream/main
+   逐项审查并解决冲突后提交。此流程保留历史，不需要强制推送。
+   不要将本地生成的 dist/index.html 混入提交。
 
-3) 重新装依赖，验证补丁还适不适用
+3. 检查补丁是否仍适用。
+   - 保留上游新增的 patchedDependencies。
+   - 若被补丁依赖的版本和内容都没变，可沿用补丁及原锁文件中的 patch_hash。
+   - 若依赖版本或上下文变化，检查新源码，用 pnpm patch 重新生成补丁并
+     同步锁文件；不能只改补丁文件名。
+   - 检查新引入的浏览器 API、CSS 和懒加载依赖，不能只解决 Git 冲突。
+   - 检查 release 输出路径、Dockerfile 和 CI 的 Go/Node/pnpm 版本。
 
-     cd web
-     npx pnpm@11.0.1 install --config.https-proxy=http://127.0.0.1:10808 --config.proxy=http://127.0.0.1:10808
+4. 推送升级分支，让 CI 验证。
 
-   代理参数是必须的：pnpm 用 Node 的 fetch(undici)，它不读 HTTP_PROXY
-   环境变量（所以 curl 能下、pnpm 报 fetch failed）。换了代理端口就改这里。
+     git push -u origin upgrade/ios15-v0.32.0
 
-4a) 装成功 —— 补丁仍然有效，提交推送
+   .github/workflows/build-ios15-image.yml 对 upgrade/ios15-* 分支执行：
+   - SQLite、MySQL、PostgreSQL 的 store 测试和迁移测试；
+   - pnpm install --frozen-lockfile（补丁或锁文件不一致会失败）；
+   - pnpm lint、pnpm test；
+   - pnpm release、pnpm check:ios15；
+   - amd64 Docker 镜像构建。
+   升级分支只验证和构建，不发布 ios15 滚动标签。
 
-     cd ..
-     git add -A
-     git commit --amend --no-edit
-     git push -f origin ios15-compat
+5. 检查 CI 结果后，将升级提交快进合入 ios15-compat 并正常推送。
+   推送前确认远端没有其他人的新提交；有则先同步，不能强制覆盖。
+   ios15-compat 的 CI 再次验证并发布 GHCR 镜像。
+   同时更新本文的基线、工具版本和兼容改动说明。
 
-    推上去后 GitHub Actions 自动构建新镜像。
+【iOS 15 验收】
 
-4b) 报 patch 打不上（ERR_PNPM_PATCH_FAILED / patch not applied）
-    —— 说明 mdast-util-gfm-autolink-literal 版本变了。三件事：
+需要在实际 iOS 15 Safari 和“添加到主屏幕”模式下验证：
+登录、首页列表、memo 详情、中文输入、标签补全、保存、图片和附件、
+日历、地图、弹窗、主题及页面切换。
 
-    (1) 查新版本号：
-          grep "mdast-util-gfm-autolink-literal@" web/pnpm-lock.yaml | head -1
+Mermaid 保持代码块降级。上游地图已有加载失败时回退到普通瓦片的逻辑；
+搜索高亮在浏览器缺少 CSS Highlight API 时不显示高亮。
+这些降级以及布局、WebGL、运行时 API 仍需真机验证。
+语法扫描通过不代表完整 iOS 15 验收通过，也不检查字符串中的动态代码。
 
-    (2) 把 web/patches/ 下的补丁文件改名成新版本号，
-        并同步改 web/pnpm-workspace.yaml 里的两处版本号。
+【发布、部署和回退】
 
-    (3) 确认新版本里那行正则没变。下载看一眼：
-          curl -sL https://registry.npmjs.org/mdast-util-gfm-autolink-literal/-/mdast-util-gfm-autolink-literal-<新版本>.tgz -o t.tgz
-          tar xzf t.tgz
-          grep -n "findEmail\]" package/lib/index.js
+镜像：
+  ghcr.io/amakerlife/memos:ios15
+  ghcr.io/amakerlife/memos:0.31.0-ios15.N
 
-        如果还是    [/(?<=^|\s|\p{P}|\p{S})([-.\w+]+)@([-\w]+(?:\.[-\w]+)+)/gu, findEmail]
-        就改成      [/([-.\w+]+)@([-\w]+(?:\.[-\w]+)+)/gu, findEmail]
-        重新生成 patch 即可（改完 patch 文件里的行号上下文也要对得上，
-        最省事的办法是照着现有 patch 的格式手改，或者用 pnpm patch 重做）。
+建议部署已验证的固定版本标签或 digest，保留旧镜像标识。
+升级前停止写入，备份完整数据库、附件和配置；SQLite 应使用一致性备份，
+或停服务后备份完整数据目录，不能只复制运行中的主 db 文件。
+外置数据库和 S3 附件按其存储方式单独备份。
 
-    这个报错是好事 —— 它保证依赖升级时补丁不会静默失效。
+0.31 包含 Spaces、Views、存储配置、reaction 和用户邮箱等迁移。
+先在数据副本上验证升级；回退时使用旧镜像并恢复升级前的数据备份。
+不能假定 0.30 可以直接打开已经迁移的 0.31 数据库。
 
-5) rebase 冲突了怎么办
+0.31 的其他变更：
+  - RSS 已移除。
+  - Shortcut API 改为 UserService 下的 View API。
+  - 邮箱会规范化并去重；无效或较新账号上的重复邮箱可能被清空。
+  - 实例管理员可以读取和管理单条 private / Space-only memo。
+详见上游 CHANGELOG.md 的 0.31.0 Upgrade notes。
 
-    补丁只碰 6 个文件，冲突面很小。最可能冲突的是 web/pnpm-lock.yaml，
-    直接拿新基线的版本，然后重跑第 3 步让它重新生成：
+【何时可以移除 fork】
 
-      git checkout v0.31.0 -- web/pnpm-lock.yaml
-      cd web && npx pnpm@11.0.1 install --config.https-proxy=http://127.0.0.1:10808 --config.proxy=http://127.0.0.1:10808
-      cd .. && git add web/pnpm-lock.yaml
-      git rebase --continue
-
-    实在乱了就 git rebase --abort，然后在新 tag 上重开一个分支手工重做
-    （改动就是上面「改动清单」那 6 个文件，都很小）。
-
-6) 上游要是自己修了这个问题
-
-    那就可以扔掉整个 fork，服务器 image 换回 neosmemo/memos:stable 完事。
-    判断方法：新版本装完依赖后，跑一次
-      cd web && npx pnpm@11.0.1 release
-      grep -rlE '[^`"'"'"']\(\?<[=!]' ../server/router/frontend/dist/assets --include='*.js'
-    没有输出就说明产物里已经没有 lookbehind 正则字面量了。
-
-
-========================================================================
-【部署】
-========================================================================
-
-镜像地址：
-
-  ghcr.io/amakerlife/memos:ios15              滚动标签，总是最新
-  ghcr.io/amakerlife/memos:0.30.0-ios15.N     带构建号，用来回滚
-
-服务器上操作（数据在 volume 里，换镜像不影响数据）：
-
-  # 先备份数据库
-  cp ~/.memos/memos_prod.db ~/.memos/memos_prod.db.bak
-
-  # compose.yaml 里把 image 改成 ghcr.io/amakerlife/memos:ios15
-  docker compose pull && docker compose up -d
-
-回滚到官方：image 改回 neosmemo/memos:stable，再 pull && up -d。
-
-首次拉取如果报 denied / unauthorized：GHCR 的包默认是 private。
-去 GitHub 头像 → Packages → memos → Package settings → Change visibility
-改成 public 最省事（镜像里只有开源代码，没有任何密钥）。
-不想公开就在服务器上登录：
-  echo "<只勾 read:packages 的 PAT>" | docker login ghcr.io -u amakerlife --password-stdin
-
-
-========================================================================
-【怎么确认修好了】
-========================================================================
-
-Actions 里有一道守护步骤，会扫描构建产物，一旦发现 lookbehind 正则字面量
-就直接让构建失败。所以只要 Actions 是绿的，这个 bug 不可能溜进镜像。
-（它能区分正则字面量和字符串：browser-support.ts 里那个探针是字符串形式、
- 包在 try/catch 里，不会误报。）
-
-真机验证：用 iOS 15 的 Safari 打开站点，首页能正常显示 memo 列表就是好了。
-mermaid 图在 iOS 15 上会显示成普通代码块 —— 这是有意的降级，不是 bug。
-
-
-========================================================================
-【建议：推给上游】
-========================================================================
-
-这个 bug 影响所有 iOS 15 用户，不只是你。给 usememos/memos 提个 issue，
-附上 parseModule 的堆栈和根因（mdast-util-gfm-autolink-literal 的 lookbehind
-正则字面量 + 默认 build.target 放行了 class static block）。
-memos 自己只需要设 build.target，lookbehind 是 remark-gfm 带进来的。
-
-另外 marked 那个被压缩器优化掉的特性检测，值得给 rolldown/oxc 提一个 bug：
-minifier 把 new RegExp(...) 当作无副作用代码删除是不对的 —— RegExp 构造
-在不支持的语法上会抛异常，这正是特性检测赖以工作的前提。
+只有在官方构建和实际 iOS 15 验证均满足需求时才切回官方镜像。
+单纯没有 lookbehind 不足以证明可移除 safari15 编译目标和运行时降级。
